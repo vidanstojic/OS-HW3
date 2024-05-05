@@ -33,6 +33,14 @@ struct context {
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct shm_obj {
+
+	char *adress;
+	int size;
+	char name[16];
+	struct shm_obj *next;
+};
+
 // Per-process state
 struct proc {
 	uint sz;                     // Size of process memory (bytes)
@@ -46,6 +54,7 @@ struct proc {
 	void *chan;                  // If non-zero, sleeping on chan
 	int killed;                  // If non-zero, have been killed
 	struct file *ofile[NOFILE];  // Open files
+	struct shm_obj *oobj[NOFILE];
 	struct inode *cwd;           // Current directory
 	char name[16];               // Process name (debugging)
 };
