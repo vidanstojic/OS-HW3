@@ -6,7 +6,8 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
-
+#include "fcntl.h"
+#include "stddef.h"
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
@@ -59,7 +60,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // be page-aligned.
 static int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
-{
+{//(mappages(pgdir, pocetak, 4096, V2P(shm->adress[j]), mode)
 	char *a, *last;
 	pte_t *pte;
 
@@ -103,15 +104,15 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 // This table defines the kernel's mappings, which are present in
 // every process's page table.
 static struct kmap {
-	void *virt;
-	uint phys_start;
-	uint phys_end;
-	int perm;
+    void *virt;
+    uint phys_start;
+    uint phys_end;
+    int perm;
 } kmap[] = {
-	{ (void*)KERNBASE, 0,             EXTMEM,    PTE_W}, // I/O space
-	{ (void*)KERNLINK, V2P(KERNLINK), V2P(data), 0},     // kern text+rodata
-	{ (void*)data,     V2P(data),     PHYSTOP,   PTE_W}, // kern data+memory
-	{ (void*)DEVSPACE, DEVSPACE,      0,         PTE_W}, // more devices
+    { (void*)KERNBASE, 0,             EXTMEM,    PTE_W},   // I/O space
+    { (void*)KERNLINK, V2P(KERNLINK), V2P(data), 0},       // Kern text+rodata
+    { (void*)data,     V2P(data),     PHYSTOP,   PTE_W},   // Kern data+memory
+    { (void*)DEVSPACE, DEVSPACE,      0,         PTE_W},   // More devices
 };
 
 // Set up kernel part of a page table.
@@ -226,6 +227,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
 	if(newsz >= KERNBASE)
 		return 0;
+
 	if(newsz < oldsz)
 		return oldsz;
 
@@ -381,5 +383,395 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 		buf += n;
 		va = va0 + PGSIZE;
 	}
+	return 0;
+}
+#define MAX_SHM_OBJS 64
+#define MAX_SHM_OBJS_FOR_PROCESS 16
+
+static int num_of_shm_objs = 0;
+static struct shm_obj* shm_objs[MAX_SHM_OBJS] = {NULL};
+
+int find_empty_index() {
+	for (int i = 0; i < MAX_SHM_OBJS; i++) {
+		if (shm_objs[i] == NULL) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+int find_empty_index_in_proc_oobj(struct proc* p) {
+	for (int i = 0; i < MAX_SHM_OBJS_FOR_PROCESS; i++) {
+		if (p->oobj[i] == NULL) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+int process_already_oppened_shm_obj(struct shm_obj* shm, struct proc* p) {
+	for (int i = 0; i < MAX_SHM_OBJS_FOR_PROCESS; i++) {
+		if (p->oobj[i] == shm) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+void shm_close_wrapper(struct proc *p, int id, int *uspelo)
+{
+	struct shm_obj *shm;
+	int shm_od;
+	int z = strlen(p->oobj[id]->name);
+	for(int i = 0; i < MAX_SHM_OBJS; i++)
+	{
+		if(strncmp(shm_objs[i]->name, p->oobj[id]->name, z) == 0)
+		{
+			shm = shm_objs[i];
+			shm_od = i;
+			break;
+		}
+	}
+
+	void *va = p->virtual_addrs;
+	void *last = va + shm->size;
+
+	while(va < last){
+		pte_t *pte;
+		pte = walkpgdir(p->pgdir, va, 0);
+		if (pte != 0)
+			*pte = 0;
+		va += 4096;
+	}
+
+	p->virtual_addrs = 0;
+	p->oobj[id] = NULL;
+	p->num_of_opened_shm_objs--;
+
+	shm->num_of_processes--;
+	if(shm->num_of_processes == 0)
+	{
+		int pages = shm->size / 4096;
+		for(int i = 0; i < pages; i++){
+			kfree((char *)shm->adress[i]);
+		}
+		kfree((char *)shm);
+		shm_objs[shm_od] = NULL;
+		num_of_shm_objs--;
+    }
+	*uspelo = 0;
+	return;
+}
+
+void shm_map_wrapper(struct proc *p, int id, int *uspelo, int mode)
+{
+	void **va;
+
+	struct shm_obj *shm;
+
+	int z = strlen(p->oobj[id]->name);
+	for(int i = 0; i < MAX_SHM_OBJS; i++)
+	{
+		if(strncmp(shm_objs[i]->name, p->oobj[id]->name, z) == 0)
+		{
+			shm = shm_objs[i];
+			break;
+		}
+	}
+
+	int perm = PTE_W|PTE_U;
+	if(mode == O_WRONLY){
+		*uspelo = -1;
+		return;
+	}
+	else if(mode == O_RDONLY)
+		perm = PTE_U;
+
+	pde_t *pgdir = p->pgdir;
+	pte_t *pte;
+
+	if(p->virtual_addrs != 0){
+		cprintf("\n Virtual address for process with name: %s is already mapped \n", p->name);
+		*uspelo = -1;
+		return;
+	}
+
+	void *a = (void*)(KERNBASE / 2);
+	void *last = (void*)KERNBASE;
+	int size = shm->size;
+	*va = a;
+
+	for(int j = 0; j < 32; j++){
+		if((pte = walkpgdir(pgdir, a, 0)) == 0  || (*pte & PTE_P) == 0)
+		{
+			uint pa = V2P(shm->adress[j]);
+			if(mappages(pgdir, a, 4096, pa, perm) == 0) {
+				size -= 4096;
+			}
+		} else{
+			*pte = 0;
+			cprintf("Failed to map\n");
+			*uspelo = -1;
+			return;
+		}
+		if(a == last || size <= 0)
+			break;
+		a += PGSIZE;
+	}
+	p->virtual_addrs = *va;
+
+	*uspelo = 0;
+	return;
+}
+int
+shm_open(void)
+{
+	char *name;
+	if(argstr(0, &name) < 0) {
+		return -1;
+	}
+
+	if(strlen(name) == 0) {
+		cprintf("shm name can't be empty");
+		return -1;
+	}
+
+	struct proc *p = myproc();
+
+	if (p->num_of_opened_shm_objs == MAX_SHM_OBJS_FOR_PROCESS) {
+		cprintf("Process with name: %s opened max number of shm_objs. Couldn't open shm_obj with name: %s", p->name, name);
+		return -1;
+	}
+
+	int found_shm = 0;
+	int index = -1;
+	struct shm_obj* shm;
+	for (int i = 0; i < MAX_SHM_OBJS; i++) {
+		shm = shm_objs[i];
+		if (shm == NULL) {
+			continue;
+		}
+
+		int shm_name_length = strlen(shm->name);
+		int name_length = strlen(name);
+
+		if (strncmp(shm->name, name, shm_name_length >= name_length ? shm_name_length : name_length) == 0) {
+			found_shm = 1;
+			index = i;
+			break;
+		}
+	}
+
+	if (found_shm == 0) {
+		if (num_of_shm_objs == MAX_SHM_OBJS) {
+			cprintf("Max number of shm_objs reached. Couldn't allocate memory for new shm_obj");
+			return -1;
+		}
+
+		index = find_empty_index();
+		if (index == -1) {
+			cprintf("There is no space in shm_obj to insert new shm_obj with name: %s", name);
+			return -1;
+		}
+
+		shm = (struct shm_obj*)kalloc();
+		if (shm == NULL) {
+			cprintf("Couldn't allocate memory for shm with name: %s", name);
+			return -1;
+		}
+
+		for (int i = 0; i < strlen(name); i++) {
+			shm->name[i] = name[i];
+		}
+		shm->name[strlen(name)] = '\0';
+
+		shm->size = 0;
+		shm->num_of_processes = 1;
+		shm->trunc_called = 0;
+
+		shm_objs[index] = shm;
+		num_of_shm_objs++;
+
+		int index_in_proc = find_empty_index_in_proc_oobj(p);
+
+		p->oobj[index_in_proc] = shm;
+		p->virtual_addrs = 0;
+		p->num_of_opened_shm_objs++;
+
+		return index;
+	}
+
+	shm = shm_objs[index];
+
+	if (process_already_oppened_shm_obj(shm, p) == 1) {
+		return index;
+	}
+
+	shm->num_of_processes++;
+
+	int index_in_proc = find_empty_index_in_proc_oobj(p);
+
+	p->oobj[index_in_proc] = shm;
+	p->virtual_addrs = 0;
+	p->num_of_opened_shm_objs++;
+
+	return index;
+}
+int
+shm_trunc(void)
+{
+	int size, id, bytes;
+
+	if(argint(0, &id) < 0 || argint(1, &size) < 0) {
+		return -1;
+	}
+
+	if(id < 0 || id >= MAX_SHM_OBJS) {
+		return -1;
+	}
+
+	struct shm_obj *shm = shm_objs[id];
+
+	if (shm->trunc_called == 1) {
+		return shm->size;
+	}
+
+	int counter = 0;
+	bytes = size % 4096;
+	if(bytes > 0)
+		bytes = size / 4096 + 1;
+	else
+		bytes = size / 4096;
+	if(bytes > 32)
+		return -1;
+	while(bytes)
+	{
+		void *mem = kalloc();
+		if(!mem){
+			kfree(mem);
+			while(counter)
+			{
+				kfree(shm->adress[--counter]);
+			}
+			shm->size = 0;
+			return -1;
+		}
+		memset(mem, 0, 4096);
+		shm->adress[counter] = mem;
+		counter++;
+		shm->size = 4096 * counter;
+		--bytes;
+	}
+
+	shm->trunc_called = 1;
+	return shm->size;
+}
+int
+shm_map(void) {
+	void **va;
+	int id, mode;
+
+	struct proc *p = myproc();
+	if(argint(0, &id) < 0 || argptr(1, (void *)&va, sizeof(void *)) < 0 || argint(2, &mode) < 0) {
+		return -1;
+	}
+	p->mode = mode;
+
+	struct shm_obj *shm = shm_objs[id];
+
+	int perm = PTE_W|PTE_U;
+	if(mode == O_WRONLY)
+		return -1;
+	else if(mode == O_RDONLY)
+		perm = PTE_U;
+
+	pde_t *pgdir = p->pgdir;
+
+	if(p->virtual_addrs != 0){
+		cprintf("\n Virtual address for process with name: %s is already mapped \n", p->name);
+		return -1;
+	}
+
+	void *a = (void*)(KERNBASE / 2);
+	void *last = (void*)KERNBASE;
+	int size = shm->size;
+	*va = a;
+
+	for(int j = 0; j < 32; j++){
+		uint pa = V2P(shm->adress[j]);
+		if(mappages(pgdir, a, 4096, pa, perm) == 0) {
+			size -= 4096;
+		} else{
+			cprintf("Failed to map\n");
+			return -1;
+		}
+		if(a == last || size <= 0)
+			break;
+		a += PGSIZE;
+	}
+	p->virtual_addrs = *va;
+
+	return 0;
+}
+
+int
+shm_close(void)
+{
+	int id;
+	struct proc *p = myproc();
+	struct shm_obj *shm;
+
+	if(argint(0, &id) < 0) {
+		return -1;
+	}
+
+	shm = shm_objs[id];
+	int index_in_proc = -1;
+
+	for(int i = 0; i < MAX_SHM_OBJS_FOR_PROCESS; i++) {
+		if (p->oobj[i] == shm) {
+			index_in_proc = i;
+			break;
+		}
+	}
+
+	if (index_in_proc == -1) {
+		cprintf("\n Couldn't find shm_obj with id: %d for process with name: %s \n", id, p->name);
+		return -1;
+	}
+
+	void *va = p->virtual_addrs;
+	void *last = va + shm->size;
+
+	while(va < last){
+		pte_t *pte;
+		pte = walkpgdir(p->pgdir, va, 0);
+		if (pte != 0)
+			*pte = 0;
+		va += 4096;
+	}
+
+	p->virtual_addrs = 0;
+	p->oobj[index_in_proc] = NULL;
+	p->num_of_opened_shm_objs--;
+
+	shm->num_of_processes--;
+	if(shm->num_of_processes == 0)
+	{
+		int pages = shm->size / 4096;
+
+		for(int i = 0; i < pages; i++){
+			kfree((char *)shm->adress[i]);
+		}
+
+		kfree((char *)shm);
+		shm_objs[id] = NULL;
+		num_of_shm_objs--;
+
+    }
+
 	return 0;
 }

@@ -10,7 +10,7 @@ int test1(void)
 	{
 		int fd = shm_open("/test1"); // so that it stays alive
 		wait();
-		int size = shm_trunc(fd, 400);
+		shm_trunc(fd, 400);
 		int *p;
 		shm_map(fd, (void **) &p, O_RDWR);
 		if(p[0] == 42 && p[1] == 42)
@@ -24,12 +24,11 @@ int test1(void)
 		shm_close(fd);
 		return 0;
 	}
-
 	if(fork())
 	{
 		wait();
 		int fd = shm_open("/test1");
-		int size = shm_trunc(fd, 400);
+		shm_trunc(fd, 400);
 		int *p;
 		shm_map(fd, (void **) &p, O_RDWR);
 		p[0] = 42;
@@ -38,7 +37,7 @@ int test1(void)
 	else
 	{
 		int fd = shm_open("/test1");
-		int size = shm_trunc(fd, 400);
+		shm_trunc(fd, 400);
 		int *p;
 		shm_map(fd, (void **) &p, O_RDWR);
 		p[1] = 42;
@@ -55,7 +54,7 @@ int test2(void)
 	}
 	printf("\nstarting test 2\n");
 	int fd = shm_open("/test2");
-	int size = shm_trunc(fd, 400);
+	shm_trunc(fd, 400);
 	int *p;
 	shm_map(fd, (void **) &p, O_RDWR);
 	p[0] = p[1] = 0;
@@ -86,7 +85,9 @@ int test2(void)
 
 int test3(void)
 {
-	if (fork()) {
+	printf("Test 3\n");
+	int provera;
+	if (provera = fork()) {
 		wait();
 		return 0;
 	}
@@ -118,6 +119,7 @@ int test3(void)
 
 int test4(void)
 {
+	printf("Test 4\n");
 	if (fork()) {
 		wait();
 		return 0;

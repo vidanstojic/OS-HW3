@@ -198,7 +198,7 @@ UPROGS=\
 	$U/_setmsg\
 	$U/_getmsg\
 	$U/_holdmsg\
-	#$U/_shmtest\
+	$U/_shmtest\
 
 fs.img: $T/mkfs README $(UPROGS)
 	$T/mkfs fs.img README $(UPROGS)

@@ -25,6 +25,7 @@ main(int argc, char **argv)
         exit();
     }
     char *shm_reg = shm_reg_;
+
     strncpy(shm_reg, argv[1], 4095);
     shm_reg[4095] = 0;
     exit();

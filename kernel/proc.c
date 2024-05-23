@@ -7,6 +7,9 @@
 #include "proc.h"
 #include "spinlock.h"
 
+extern void shm_map_wrapper(struct proc *np, int id,int *uspelo, int mode);
+extern void shm_close_wrapper(struct proc *np, int id,int *uspelo);
+
 struct {
 	struct spinlock lock;
 	struct proc proc[NPROC];
@@ -194,6 +197,7 @@ fork(void)
 		kfree(np->kstack);
 		np->kstack = 0;
 		np->state = UNUSED;
+		cprintf("OVDE\n");
 		return -1;
 	}
 	np->sz = curproc->sz;
@@ -207,6 +211,27 @@ fork(void)
 		if(curproc->ofile[i])
 			np->ofile[i] = filedup(curproc->ofile[i]);
 	np->cwd = idup(curproc->cwd);
+
+
+	for(i = 0; i < NOFILE; i++)
+	{
+		if(curproc->oobj[i] != 0){
+			int uspelo;
+			curproc->oobj[i]->num_of_processes += 1;
+			np->oobj[i] = curproc->oobj[i];
+			np->virtual_addrs = 0;
+			np->num_of_opened_shm_objs = curproc->num_of_opened_shm_objs + 1;
+			np->mode = curproc->mode;
+			shm_map_wrapper(np, i, &uspelo, curproc->mode);
+			if(uspelo < 0)
+			{
+				cprintf("\nGRESKA\n");
+				np->num_of_opened_shm_objs -= 1;
+				curproc->oobj[i]->num_of_processes -= 1;
+				np->oobj[i] = 0;
+			}
+		}
+	}
 
 	safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
@@ -227,9 +252,10 @@ fork(void)
 void
 exit(void)
 {
+
 	struct proc *curproc = myproc();
 	struct proc *p;
-	int fd;
+	int fd, shm;
 
 	if(curproc == initproc)
 		panic("init exiting");
@@ -239,6 +265,17 @@ exit(void)
 		if(curproc->ofile[fd]){
 			fileclose(curproc->ofile[fd]);
 			curproc->ofile[fd] = 0;
+		}
+	}
+
+	for(shm = 0; shm < NOFILE; shm++){
+		if(curproc->oobj[shm] == 0){
+			continue;
+		}else{
+			int uspelo;
+			shm_close_wrapper(curproc, shm, &uspelo);
+			if(uspelo<0)
+				cprintf("Lose zatvoren fajl\n");
 		}
 	}
 

@@ -15,5 +15,6 @@ main(int argc, char **argv)
     printf("holding message as pid %d..\nkill to forget\n", getpid());
     while(1)
         sleep(9999);
+    printf("izasao\n");
     exit();
 }
